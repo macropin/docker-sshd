@@ -1,0 +1,35 @@
+FROM debian:buster AS builder
+
+# Download QEMU, see https://github.com/docker/hub-feedback/issues/1261
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    apt-utils \
+  && rm -rf /var/lib/apt/lists/* \
+  && apt -qyy clean
+RUN export QEMU_USER_STATIC_LATEST_TAG=$(curl -s https://api.github.com/repos/multiarch/qemu-user-static/tags \
+        | grep 'name.*v[0-9]' | head -n 1 | cut -d '"' -f 4) && \
+    curl -SL "https://github.com/multiarch/qemu-user-static/releases/download/${QEMU_USER_STATIC_LATEST_TAG}/x86_64_qemu-aarch64-static.tar.gz" \
+        | tar xzv --directory /
+
+FROM arm64v8/alpine:3.12
+
+COPY --from=builder /qemu-aarch64-static /usr/bin/
+
+RUN apk update && \
+    apk add bash git openssh rsync augeas shadow rssh && \
+    deluser $(getent passwd 33 | cut -d: -f1) && \
+    delgroup $(getent group 33 | cut -d: -f1) 2>/dev/null || true && \
+    mkdir -p ~root/.ssh /etc/authorized_keys && chmod 700 ~root/.ssh/ && \
+    augtool 'set /files/etc/ssh/sshd_config/AuthorizedKeysFile ".ssh/authorized_keys /etc/authorized_keys/%u"' && \
+    echo -e "Port 22\n" >> /etc/ssh/sshd_config && \
+    cp -a /etc/ssh /etc/ssh.cache && \
+    rm -rf /var/cache/apk/*
+
+EXPOSE 22
+
+COPY entry.sh /entry.sh
+
+ENTRYPOINT ["/entry.sh"]
+
+CMD ["/usr/sbin/sshd", "-D", "-e", "-f", "/etc/ssh/sshd_config"]
